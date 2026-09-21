@@ -278,21 +278,27 @@ Block 3 (0x18–0x1F)   Integrity + administration
 
 **Page 1 (0x20–0x3F) — Sensor data (SRAM)**
 
+Chip table:
+
+| Index | Chip | Measurements |
+|-------|------|--------------|
+| 0 | SHT31 | temperature, relative humidity |
+| 1 | LPS35HW | pressure, temperature |
+
+Block 0 (0x20–0x27) is the universal block defined by [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification#page-1--sensor-data): status (ready, per-chip fault bits, pan-fault), control (trigger, chip select, sleep), reading counter, device config byte at 0x26, latched fault code at 0x27. Device data begins at 0x28. Config (0x26): no bits defined; write 0x00.
+
 ```
-Block 0 (0x20–0x27)   SHT31 — temperature + humidity
-  0x20        Status       bit 0=ready, bit 1=SHT31 fault, bit 2=LPS35HW fault,
-                           bit 7=pan-fault
-  0x21        Extended faults (reserved, 0x00)
-  0x22–0x23   Temp SHT31   int16, 0.01 °C, little-endian
-  0x24–0x25   Humidity     uint16, 0.01 % RH, little-endian
-  0x26–0x27   Reserved
+Block 1 (0x28–0x2F)   SHT31 — temperature + humidity
+  0x28–0x29   Temp SHT31   int16, 0.01 °C, little-endian
+  0x2A–0x2B   Humidity     uint16, 0.01 % RH, little-endian
+  0x2C–0x2F   Reserved
 
-Block 1 (0x28–0x2F)   LPS35HW — pressure + temperature
-  0x28–0x2B   Pressure     uint32, 0.01 hPa, little-endian
-  0x2C–0x2D   Temp LPS35HW int16, 0.01 °C, little-endian
-  0x2E–0x2F   Reserved
+Block 2 (0x30–0x37)   LPS35HW — pressure + temperature
+  0x30–0x33   Pressure     uint32, 0.01 hPa, little-endian
+  0x34–0x35   Temp LPS35HW int16, 0.01 °C, little-endian
+  0x36–0x37   Reserved
 
-Block 2–3 (0x30–0x3F)   Reserved
+Block 3 (0x38–0x3F)   Reserved
 ```
 
 Check bit 0 of 0x20 before using any measurement. If clear, all other Page 1 bytes are stale.
