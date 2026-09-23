@@ -41,19 +41,21 @@
 //Page 0 at 0x0A and recomputes the CRC there (NW-Device-Specification).
 #define FW_FW_PATCH 1
 
-//Page 0 (identity, 32 bytes) is the top of EEPROM: 0xE0-0xFF on the
-//ATtiny1634's 256-byte EEPROM. Written once by NW-Provision; read at boot.
-#define PAGE0_BASE   (E2END + 1 - 32)
+//Pages 0 and 1 (identity and calibration, 64 bytes) are the top of EEPROM:
+//0xC0-0xFF on the ATtiny1634's 256-byte EEPROM. Page 0 is written once by
+//NW-Provision and read at boot. Haar has no calibration: Page 1 is served
+//as zeros, and its EEPROM bytes are not read.
+#define PAGE0_BASE   (E2END + 1 - 64)
 #define REG_I2C_ADDR 0x1F
 #define ADR_DEFAULT  0x48  //Schema 1 'H'; used when Page 0 byte 0x1F is 0xFF (was 0x42)
 
-//Page 1 Block 0 (NW-Device-Specification): universal status and control.
-#define REG_STATUS   0x20
-#define REG_CTRL     0x21
-#define REG_COUNTER  0x22
-#define REG_REQUEST  0x24  //Readings requested, uint16 LE, writable; Haar has no chip power to hold, so it only accepts the write
-#define REG_CONFIG   0x26  //No bits defined for Haar
-#define REG_REPORT   0x27
+//Page 2 Block 0 (NW-Device-Specification): universal status and control.
+#define REG_STATUS   0x40
+#define REG_CTRL     0x41
+#define REG_COUNTER  0x42
+#define REG_REQUEST  0x44  //Readings requested, uint16 LE, writable; Haar has no chip power to hold, so it only accepts the write
+#define REG_CONFIG   0x46  //No bits defined for Haar
+#define REG_REPORT   0x47
 #define BIT_READY    0x01
 #define BIT_PANFAULT 0x80
 #define BIT_TRIGGER  0x01
@@ -72,7 +74,7 @@ unsigned long ReadTimeout = 100; //Wait at most 100ms for new read
 
 uint8_t Config = 0; //Global config value
 
-uint8_t Reg[64] = {0}; //Initialize registers; 0x00-0x1F = Page 0 (identity), 0x20-0x27 = Page 1 Block 0 (status/control), 0x28-0x3F = Page 1 sensor data
+uint8_t Reg[96] = {0}; //Initialize registers; 0x00-0x1F = Page 0 (identity), 0x20-0x3F = Page 1 (calibration: none on Haar, zeros), 0x40-0x47 = Page 2 Block 0 (status/control), 0x48-0x5F = Page 2 sensor data
 bool page0Valid = false; //Page 0 CRC matched what NW-Provision wrote
 bool Sample = true; //Flag used to start a new converstion
 bool Sleep = false; //Used to put the device into deep sleep //ADD
@@ -130,8 +132,8 @@ void loop() {
 		if(doLPS) WriteByte(LPS35HW_ADDR, LPS35HW_CTRL_REG2, LPS35HW_CTRL_REG2_DEFAULT | 0x01); //Set ONE_SHOT bit in order to trigger new conversion for pressure
 		if(doSHT) {
 			if(!readRH()) shtCrcFail = true; //Get new temp/RH values
-			SplitAndLoad(0x28, (unsigned int)(int16_t)((ST * 17500UL + 32767UL) / 65535UL - 4500)); //Schema 1: temp SHT31, int16, 0.01 C (Block 1); -45 + 175*ST/65535, rounded
-			SplitAndLoad(0x2A, (unsigned int)((SRH * 10000UL + 32767UL) / 65535UL)); //Schema 1: humidity, uint16, 0.01 %RH (Block 1); 100*SRH/65535, rounded
+			SplitAndLoad(0x48, (unsigned int)(int16_t)((ST * 17500UL + 32767UL) / 65535UL - 4500)); //Schema 1: temp SHT31, int16, 0.01 C (Block 1); -45 + 175*ST/65535, rounded
+			SplitAndLoad(0x4A, (unsigned int)((SRH * 10000UL + 32767UL) / 65535UL)); //Schema 1: humidity, uint16, 0.01 %RH (Block 1); 100*SRH/65535, rounded
 		}
 		if(doLPS) presDone = ReadPres(); //FIX!!! Make non-blocking/parellel conversion
 
@@ -227,12 +229,12 @@ bool ReadPres(void) {
 		uint32_t PresRaw = ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_XL); //Read out LSB
 		PresRaw |= (uint32_t)ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_L) << 8; //Read out Mid byte
 		PresRaw |= (uint32_t)ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_H) << 16; //Read out MSB
-		SplitAndLoad(0x30, long((PresRaw * 25UL + 512UL) / 1024UL)); //Schema 1: pressure, uint32, 0.01 hPa (Block 2); raw/4096 hPa, rounded
+		SplitAndLoad(0x50, long((PresRaw * 25UL + 512UL) / 1024UL)); //Schema 1: pressure, uint32, 0.01 hPa (Block 2); raw/4096 hPa, rounded
 
 		unsigned int TempRaw = ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_L); //Read out LSB
 		// Reg[0x02] = 10;
 		TempRaw |= ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_H) << 8; //Read out MSB
-		SplitAndLoad(0x34, TempRaw); //Schema 1: temp LPS35HW, int16, 0.01 C (Block 2); the chip's own unit
+		SplitAndLoad(0x54, TempRaw); //Schema 1: temp LPS35HW, int16, 0.01 C (Block 2); the chip's own unit
 	}
 	return Done; //Return valid status
 }
@@ -343,7 +345,7 @@ void loadPage0() {
 }
 
 //Registers a controller may write. Everything else is read-only and writes
-//to it are ignored (NW-Device-Specification, Page 1 rules).
+//to it are ignored (NW-Device-Specification, Page 2 rules).
 bool isWritable(uint8_t pos) {
 	return pos == REG_CTRL || pos == REG_CONFIG || pos == REG_I2C_ADDR
 	    || pos == REG_REQUEST || pos == REG_REQUEST + 1;
