@@ -77,6 +77,9 @@ bool page0Valid = false; //Page 0 CRC matched what NW-Provision wrote
 bool Sample = true; //Flag used to start a new converstion
 bool Sleep = false; //Used to put the device into deep sleep //ADD
 bool Startup = false;
+bool shtNoAck = false; //SHT31 did not acknowledge during the last reading
+bool shtCrcFail = false; //SHT31 data failed its own CRC during the last reading
+bool lpsNoAck = false; //LPS35HW did not acknowledge during the last reading
 
 uint16_t ST, SRH; //Global values for RH sensor (FIX!!!!)
 
@@ -91,9 +94,12 @@ volatile bool RepeatedStart = false; //Used to show if the start was repeated or
 void setup() {
 	pinMode(15, OUTPUT); //DEBUG!
 	digitalWrite(15, HIGH); //DEBUG!
-	Reg[0] = 0x00; //Set Config to POR value
+	Reg[REG_CONFIG] = 0x00; //Set Config to POR value
 	loadPage0();
 	if(Reg[REG_I2C_ADDR] != 0xFF) ADR = Reg[REG_I2C_ADDR]; //Provisioned address; 0xFF = use default
+	Reg[REG_STATUS] = 0; //Not ready: no reading yet
+	Reg[REG_CTRL] = CHIP_SHT31 | CHIP_LPS35HW; //Power-up: every chip selected
+	Reg[REG_FAULT] = page0Valid ? FAULT_UNIT_RESET : FAULT_UNIT_PAGE0; //Latched until the controller writes Control
 	Wire.begin(ADR);  //Begin slave I2C
 
 	Wire.onAddrReceive(addressEvent); // register event
@@ -111,16 +117,38 @@ void setup() {
 }
 
 void loop() {
-	Sample = BitRead(Reg[0], 0);
+	Sample = BitRead(Reg[REG_CTRL], 0); //Trigger: Control bit 0 (on-demand only; no free-running cycle)
 
-	if(Sample == true || Startup == false) {  //FIX!!! Make first conversion cleaner
-		WriteByte(LPS35HW_ADDR, LPS35HW_CTRL_REG2, LPS35HW_CTRL_REG2_DEFAULT | 0x01); //Set ONE_SHOT bit in order to trigger new conversion for pressure
-		readRH(); //Get new temp/RH values
+	if(Sample == true) {
+		//A reading begins: clear ready, take the chip selection, consume the trigger.
+		Reg[REG_STATUS] &= ~BIT_READY;
+		bool doSHT = Reg[REG_CTRL] & CHIP_SHT31;
+		bool doLPS = Reg[REG_CTRL] & CHIP_LPS35HW;
+		Reg[REG_CTRL] &= ~(BIT_TRIGGER | BIT_SLEEP); //trigger consumed; sleep not implemented
+		shtNoAck = shtCrcFail = lpsNoAck = false;
+		bool presDone = true;
+		if(doLPS) WriteByte(LPS35HW_ADDR, LPS35HW_CTRL_REG2, LPS35HW_CTRL_REG2_DEFAULT | 0x01); //Set ONE_SHOT bit in order to trigger new conversion for pressure
+		if(doSHT) {
+		if(!readRH()) shtCrcFail = true; //Get new temp/RH values
 		SplitAndLoad(0x28, (unsigned int)(int16_t)((ST * 17500UL) / 65535UL - 4500)); //Schema 1: temp SHT31, int16, 0.01 C (Block 1); -45 + 175*ST/65535
 		SplitAndLoad(0x2A, (unsigned int)((SRH * 10000UL) / 65535UL)); //Schema 1: humidity, uint16, 0.01 %RH (Block 1); 100*SRH/65535
-		ReadPres(); //FIX!!! Make non-blocking/parellel conversion
+		}
+		if(doLPS) presDone = ReadPres(); //FIX!!! Make non-blocking/parellel conversion
 
-		Reg[0] = Reg[0] & 0xFE; //Clear sample bit in register
+		//Reading complete: load status and fault, bump the counter, set ready.
+		//Atomic so a controller's page read never straddles the update.
+		uint8_t status = BIT_READY;
+		if(doSHT && shtNoAck) { status |= CHIP_SHT31; Reg[REG_FAULT] = FAULT_SHT31_NOACK; }
+		else if(doSHT && shtCrcFail) { status |= CHIP_SHT31; Reg[REG_FAULT] = FAULT_SHT31_CHECKSUM; }
+		if(doLPS && lpsNoAck) { status |= CHIP_LPS35HW; Reg[REG_FAULT] = FAULT_LPS35HW_NOACK; }
+		else if(doLPS && !presDone) { status |= CHIP_LPS35HW; Reg[REG_FAULT] = FAULT_LPS35HW_TIMEOUT; }
+		if(status & 0x7E) status |= BIT_PANFAULT;
+		uint16_t count = Reg[REG_COUNTER] | (Reg[REG_COUNTER + 1] << 8);
+		count++;
+		cli();
+		Reg[REG_COUNTER] = count & 0xFF; Reg[REG_COUNTER + 1] = count >> 8;
+		Reg[REG_STATUS] = status;
+		sei();
 		Sample = false; //Clear sample bit
 		Startup = true; //Set after first conversion
 	}
@@ -256,7 +284,7 @@ boolean readRH(void) {
 
 void writeCommand(uint16_t cmd) {
   // Wire.beginTransmission(SHT31_ADDR);
-  si.i2c_start((SHT31_ADDR << 1) | WRITE);
+  if(!si.i2c_start((SHT31_ADDR << 1) | WRITE)) shtNoAck = true; //No acknowledge: chip 0 fault on this reading
   si.i2c_write(cmd >> 8);
   si.i2c_write(cmd & 0xFF);
   // Wire.endTransmission();
@@ -328,7 +356,7 @@ bool BitRead(uint8_t Val, uint8_t Pos) //Read the bit value at the specified pos
 
 uint8_t SendCommand(uint8_t Adr, uint8_t Command)
 {
-    si.i2c_start((Adr << 1) | WRITE);
+    if(!si.i2c_start((Adr << 1) | WRITE) && Adr == LPS35HW_ADDR) lpsNoAck = true; //No acknowledge: chip 1 fault on this reading
     bool Error = si.i2c_write(Command);
     // si.i2c_stop(); //DEBUG!
     return 1; //DEBUG!
@@ -346,7 +374,7 @@ uint8_t WriteWord(uint8_t Adr, uint8_t Command, unsigned int Data)  //Writes val
 
 uint8_t WriteByte(uint8_t Adr, uint8_t Command, uint8_t Data)  //Writes value to 16 bit register
 {
-	si.i2c_start((Adr << 1) | WRITE);
+	if(!si.i2c_start((Adr << 1) | WRITE) && Adr == LPS35HW_ADDR) lpsNoAck = true; //No acknowledge: chip 1 fault on this reading
 	si.i2c_write(Command); //Write Command value
 	uint8_t Error = si.i2c_write((Data) & 0xFF); //Write MSB
 	si.i2c_stop();
