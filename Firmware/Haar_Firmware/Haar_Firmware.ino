@@ -4,6 +4,7 @@
 #include <avr/sleep.h>
 #include <avr/power.h>
 #include "WireS.h"
+#include <EEPROM.h>
 
 
 #define SHT31_ADDR    0x45
@@ -33,20 +34,33 @@
 #define LPS35HW_CTRL_REG2_DEFAULT 0x10
 
 #define READ 0x01
+
+//Firmware patch version: bump on any behavioural change visible to the
+//library. The hardware version lives in Page 0 (EEPROM), written at
+//provisioning; the firmware writes this constant into the served copy of
+//Page 0 at 0x0A and recomputes the CRC there (NW-Device-Specification).
+#define FW_FW_PATCH 1
+
+//Page 0 (identity, 32 bytes) is the top of EEPROM: 0xE0-0xFF on the
+//ATtiny1634's 256-byte EEPROM. Written once by NW-Provision; read at boot.
+#define PAGE0_BASE   (E2END + 1 - 32)
+#define REG_I2C_ADDR 0x1F
+#define ADR_DEFAULT  0x48  //Schema 1 'H'; used when Page 0 byte 0x1F is 0xFF (was 0x42)
 #define WRITE 0x00
 
 unsigned long ReadTimeout = 100; //Wait at most 100ms for new read
 
 uint8_t Config = 0; //Global config value
 
-uint8_t Reg[10] = {0}; //Initialize registers
+uint8_t Reg[64] = {0}; //Initialize registers; 0x00-0x1F = Page 0 (identity), 0x20-0x27 = Page 1 Block 0 (status/control), 0x28-0x3F = Page 1 sensor data
+bool page0Valid = false; //Page 0 CRC matched what NW-Provision wrote
 bool Sample = true; //Flag used to start a new converstion
 bool Sleep = false; //Used to put the device into deep sleep //ADD
 bool Startup = false;
 
 uint16_t ST, SRH; //Global values for RH sensor (FIX!!!!)
 
-volatile uint8_t ADR = 0x42; //Use arbitraty address, change using generall call??
+volatile uint8_t ADR = ADR_DEFAULT; //I2C address: Page 0 byte 0x1F (EEPROM), or ADR_DEFAULT if unprogrammed
 
 SlowSoftI2CMaster si = SlowSoftI2CMaster(PIN_C4, PIN_C5, true);  //Initialize software I2C
 
@@ -58,6 +72,8 @@ void setup() {
 	pinMode(15, OUTPUT); //DEBUG!
 	digitalWrite(15, HIGH); //DEBUG!
 	Reg[0] = 0x00; //Set Config to POR value
+	loadPage0();
+	if(Reg[REG_I2C_ADDR] != 0xFF) ADR = Reg[REG_I2C_ADDR]; //Provisioned address; 0xFF = use default
 	Wire.begin(ADR);  //Begin slave I2C
 
 	Wire.onAddrReceive(addressEvent); // register event
@@ -255,6 +271,27 @@ uint8_t crc8(const uint8_t *data, int len)
 
 
 /////////// Utility Functions///////////////
+//CRC-8/SMBUS (poly 0x07, init 0x00), the NW-Device-Specification reference
+//for Page 0. (crc8() above is the SHT31's own CRC: poly 0x31, init 0xFF.)
+uint8_t crc8smbus(const uint8_t* data, uint8_t len) {
+	uint8_t crc = 0x00;
+	for(uint8_t i = 0; i < len; i++) {
+		crc ^= data[i];
+		for(uint8_t b = 0; b < 8; b++) crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : (crc << 1);
+	}
+	return crc;
+}
+
+//Copy Page 0 from EEPROM into the served register array, check its CRC,
+//then substitute this firmware's patch version at 0x0A and recompute the
+//CRC of the served copy (EEPROM is left as provisioned).
+void loadPage0() {
+	for(uint8_t i = 0; i < 32; i++) Reg[i] = EEPROM.read(PAGE0_BASE + i);
+	page0Valid = (crc8smbus(Reg, 0x1E) == Reg[0x1E]) && Reg[0x00] == 0x01;
+	Reg[0x0A] = FW_FW_PATCH;
+	Reg[0x1E] = crc8smbus(Reg, 0x1E);
+}
+
 bool BitRead(uint8_t Val, uint8_t Pos) //Read the bit value at the specified position
 {
 	return (Val >> Pos) & 0x01;
