@@ -96,8 +96,8 @@ void loop() {
 	if(Sample == true || Startup == false) {  //FIX!!! Make first conversion cleaner
 		WriteByte(LPS35HW_ADDR, LPS35HW_CTRL_REG2, LPS35HW_CTRL_REG2_DEFAULT | 0x01); //Set ONE_SHOT bit in order to trigger new conversion for pressure
 		readRH(); //Get new temp/RH values
-		SplitAndLoad(0x04, ST); //Load temp from RH sensor
-		SplitAndLoad(0x09, SRH); //Load RH
+		SplitAndLoad(0x28, (unsigned int)(int16_t)((ST * 17500UL) / 65535UL - 4500)); //Schema 1: temp SHT31, int16, 0.01 C (Block 1); -45 + 175*ST/65535
+		SplitAndLoad(0x2A, (unsigned int)((SRH * 10000UL) / 65535UL)); //Schema 1: humidity, uint16, 0.01 %RH (Block 1); 100*SRH/65535
 		ReadPres(); //FIX!!! Make non-blocking/parellel conversion
 
 		Reg[0] = Reg[0] & 0xFE; //Clear sample bit in register
@@ -176,13 +176,15 @@ bool ReadPres(void) {
 		}
 	}
 	if(Done) {  //If read succesfully
-		Reg[0x06] = ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_XL); //Read out LSB
-		Reg[0x07] = ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_L); //Read out Mid byte
-		Reg[0x08] = ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_H); //Read out MSB
+		uint32_t PresRaw = ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_XL); //Read out LSB
+		PresRaw |= (uint32_t)ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_L) << 8; //Read out Mid byte
+		PresRaw |= (uint32_t)ReadByte(LPS35HW_ADDR, LPS35HW_PRESS_OUT_H) << 16; //Read out MSB
+		SplitAndLoad(0x30, long((PresRaw * 25UL) / 1024UL)); //Schema 1: pressure, uint32, 0.01 hPa (Block 2); raw/4096 hPa
 
-		Reg[0x02] = ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_L); //Read out LSB
+		unsigned int TempRaw = ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_L); //Read out LSB
 		// Reg[0x02] = 10;
-		Reg[0x03] = ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_H); //Read out MSB
+		TempRaw |= ReadByte(LPS35HW_ADDR, LPS35HW_TEMP_OUT_H) << 8; //Read out MSB
+		SplitAndLoad(0x34, TempRaw); //Schema 1: temp LPS35HW, int16, 0.01 C (Block 2); the chip's own unit
 	}
 	return Done; //Return valid status
 }
