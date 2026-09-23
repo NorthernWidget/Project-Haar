@@ -246,9 +246,9 @@ The firmware on `master` implements [NW-Device-Specification](https://github.com
 
 ### Register map (NW-Device-Specification Schema 1)
 
-Two 32-byte pages. Identity is EEPROM-backed (written by [NW-Provision](https://github.com/NorthernWidget/NW-Provision); the firmware copies it to the register array at boot, checks the CRC, and substitutes its own patch version at `0x0A`); sensor data is SRAM-backed, converted to the units below in the firmware. No calibration page (both sensors are factory-calibrated with no user calibration step). A controller sets a start register with a one-byte write and then reads up to 32 bytes with auto-increment.
+Three 32-byte pages. Identity (Page 0) is EEPROM-backed (written by [NW-Provision](https://github.com/NorthernWidget/NW-Provision); the firmware copies it to the register array at boot, checks the CRC, and substitutes its own patch version at `0x0A`). Calibration (Page 1) is reserved and reads as zeros: both sensors are factory-calibrated with no user calibration step. Sensor data (Page 2) is SRAM-backed, converted to the units below in the firmware. A controller sets a start register with a one-byte write and then reads up to 32 bytes with auto-increment. Pages renumbered 2026-09-23 (spec 4c3b18d): calibration is Page 1 at 0x20, data Page 2 at 0x40.
 
-**Page 0 (0x00–0x1F) — Identity (EEPROM)**
+**Page 0 (0x00–0x1F): Identity (EEPROM)**
 
 ```
 Block 0 (0x00–0x07)   Core identity
@@ -276,7 +276,11 @@ Block 3 (0x18–0x1F)   Integrity + administration
   0x1F        0x48              I2C address (writable over I2C; persisted to EEPROM; 0xFF = use default)
 ```
 
-**Page 1 (0x20–0x3F) — Sensor data (SRAM)**
+**Page 1 (0x20–0x3F): Calibration (reserved)**
+
+Haar has no calibration data. The firmware serves this page as 32 bytes of 0x00 and does not read its EEPROM bytes (`0xE0–0xFF`).
+
+**Page 2 (0x40–0x5F): Sensor data (SRAM)**
 
 Chip table:
 
@@ -285,23 +289,23 @@ Chip table:
 | 0 | SHT31 | temperature, relative humidity |
 | 1 | LPS35HW | pressure, temperature |
 
-Block 0 (0x20–0x27) is the universal block defined by [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification#page-1-sensor-data): status (ready, per-chip fault bits, pan-fault), control (trigger, chip select, sleep), reading counter, device config byte at 0x26, latched fault code at 0x27. Device data begins at 0x28. Config (0x26): no bits defined; write 0x00. On Haar: a reading starts only on a trigger (Control bit 0); there is no free-running cycle. Control bit 1 selects the SHT31 and bit 2 the LPS35HW; ready (Status bit 0) clears while the chips are read and returns with the reading counter incremented. A chip fault sets its status bit (bit 1 SHT31, bit 2 LPS35HW, bit 7 summary) and latches the fault byte: SHT31 no acknowledge (kind 1) or its own CRC failing (kind 3); LPS35HW no acknowledge (kind 1) or its ONE_SHOT conversion not completing within 100 ms (kind 2); boot latches unit kind 6 (reset), or kind 3 if Page 0 failed its CRC. The next Control write clears it. The readings-requested word (0x24–0x25) and the sleep bit are accepted without effect. Between readings the ATtiny sleeps in standby and wakes on its I²C address.
+Block 0 (0x40–0x47) is the universal block defined by [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification#page-2-sensor-data): status (ready, per-chip fault bits, pan-fault), control (trigger, chip select, sleep), reading counter, device config byte at 0x46, latched fault code at 0x47. Device data begins at 0x48. Config (0x46): no bits defined; write 0x00. On Haar: a reading starts only on a trigger (Control bit 0); there is no free-running cycle. Control bit 1 selects the SHT31 and bit 2 the LPS35HW; ready (Status bit 0) clears while the chips are read and returns with the reading counter incremented. A chip fault sets its status bit (bit 1 SHT31, bit 2 LPS35HW, bit 7 summary) and latches the fault byte: SHT31 no acknowledge (kind 1) or its own CRC failing (kind 3); LPS35HW no acknowledge (kind 1) or its ONE_SHOT conversion not completing within 100 ms (kind 2); boot latches unit kind 6 (reset), or kind 3 if Page 0 failed its CRC. The next Control write clears it. The readings-requested word (0x44–0x45) and the sleep bit are accepted without effect. Between readings the ATtiny sleeps in standby and wakes on its I²C address.
 
 ```
-Block 1 (0x28–0x2F)   SHT31 — temperature + humidity
-  0x28–0x29   Temp SHT31   int16, 0.01 °C, little-endian
-  0x2A–0x2B   Humidity     uint16, 0.01 % RH, little-endian
-  0x2C–0x2F   Reserved
+Block 1 (0x48–0x4F)   SHT31 — temperature + humidity
+  0x48–0x49   Temp SHT31   int16, 0.01 °C, little-endian
+  0x4A–0x4B   Humidity     uint16, 0.01 % RH, little-endian
+  0x4C–0x4F   Reserved
 
-Block 2 (0x30–0x37)   LPS35HW — pressure + temperature
-  0x30–0x33   Pressure     uint32, 0.01 hPa, little-endian
-  0x34–0x35   Temp LPS35HW int16, 0.01 °C, little-endian
-  0x36–0x37   Reserved
+Block 2 (0x50–0x57)   LPS35HW — pressure + temperature
+  0x50–0x53   Pressure     uint32, 0.01 hPa, little-endian
+  0x54–0x55   Temp LPS35HW int16, 0.01 °C, little-endian
+  0x56–0x57   Reserved
 
-Block 3 (0x38–0x3F)   Reserved
+Block 3 (0x58–0x5F)   Reserved
 ```
 
-Check bit 0 of 0x20 before using any measurement. If clear, all other Page 1 bytes are stale.
+Check bit 0 of 0x40 before using any measurement. If clear, all other Page 2 bytes are stale.
 
 ---
 
@@ -468,7 +472,7 @@ This response time information should serve as a guide to the choice of housing.
 
 ## NW-Device-Specification — Schema 1, Page 0
 
-Implements [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification) Schema 1. The 32-byte identity block (Page 0) is stored at the top of EEPROM:
+Implements [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification) Schema 1. The 32-byte identity block (Page 0) is stored in the top 64 bytes of EEPROM, at `0xC0–0xDF` on the ATtiny1634, with the reserved calibration page (Page 1) above it at `0xE0–0xFF`:
 
 ```
 Block 0:  Schema=0x01, Name='H','a','a','r',0x00,0x00,0x00
