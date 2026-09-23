@@ -224,13 +224,13 @@ Using this ISP, upload (as of the time of writing): [the Arduino sketch in this 
 
 ## Register map and firmware internals
 
-The Haar firmware runs on an ATTiny1634 and exposes an I2C register map to the host logger. The default I2C address is `0x42`.
+The Haar firmware runs on an ATTiny1634 and exposes an I2C register map to the host logger. The default I2C address is `0x48` (Schema 1 `'H'`; the address stored in Page 0 byte `0x1F` overrides it). Firmware before Schema 1 answered at `0x42`.
 
 The device exposes a flat, byte-addressable virtual address space. The master writes a 1-byte starting address, then reads up to 32 bytes in one transaction. Pages are 32-byte aligned.
 
-Two layouts exist: the **current firmware** (deployed) and the **proposed** layout under [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification) Schema 1, which the firmware will be updated to implement.
+The firmware on `master` implements [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification) Schema 1 (firmware patch 1, 2026-09-23, unreleased and not yet validated on hardware). The layout that the last released firmware exposed is kept below for anyone reading a deployed unit.
 
-### Current register map (deployed firmware)
+### Legacy register map (firmware before Schema 1)
 
 10-byte array, no schema byte, no device name. The library reads one register at a time (no bulk page read). The master triggers a conversion by writing `0x01` to address `0x00`; the firmware clears bit 0 when the measurement is complete.
 
@@ -244,9 +244,9 @@ Two layouts exist: the **current firmware** (deployed) and the **proposed** layo
              ⚠ 0x0A is out of bounds — Reg[10] ends at 0x09
 ```
 
-### Proposed register map (NW-Device-Specification Schema 1)
+### Register map (NW-Device-Specification Schema 1)
 
-Two 32-byte pages. Identity is EEPROM-backed; sensor data is SRAM-backed. No calibration page (both sensors are factory-calibrated with no user calibration step).
+Two 32-byte pages. Identity is EEPROM-backed (written by [NW-Provision](https://github.com/NorthernWidget/NW-Provision); the firmware copies it to the register array at boot, checks the CRC, and substitutes its own patch version at `0x0A`); sensor data is SRAM-backed, converted to the units below in the firmware. No calibration page (both sensors are factory-calibrated with no user calibration step). A controller sets a start register with a one-byte write and then reads up to 32 bytes with auto-increment.
 
 **Page 0 (0x00–0x1F) — Identity (EEPROM)**
 
@@ -271,9 +271,9 @@ Block 2 (0x10–0x17)   Serial number
 
 Block 3 (0x18–0x1F)   Integrity + administration
   0x18–0x1C   0x00 ×5           Reserved
-  0x1D        0x00              Magic byte (reserved; purpose TBD)
+  0x1D        0x4E              Magic byte
   0x1E        [computed]        CRC-8 of bytes 0x00–0x1D
-  0x1F        0x42              I2C address (writable; 0xFF = use default)
+  0x1F        0x48              I2C address (writable over I2C; persisted to EEPROM; 0xFF = use default)
 ```
 
 **Page 1 (0x20–0x3F) — Sensor data (SRAM)**
@@ -285,7 +285,7 @@ Chip table:
 | 0 | SHT31 | temperature, relative humidity |
 | 1 | LPS35HW | pressure, temperature |
 
-Block 0 (0x20–0x27) is the universal block defined by [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification#page-1--sensor-data): status (ready, per-chip fault bits, pan-fault), control (trigger, chip select, sleep), reading counter, device config byte at 0x26, latched fault code at 0x27. Device data begins at 0x28. Config (0x26): no bits defined; write 0x00.
+Block 0 (0x20–0x27) is the universal block defined by [NW-Device-Specification](https://github.com/NorthernWidget/NW-Device-Specification#page-1--sensor-data): status (ready, per-chip fault bits, pan-fault), control (trigger, chip select, sleep), reading counter, device config byte at 0x26, latched fault code at 0x27. Device data begins at 0x28. Config (0x26): no bits defined; write 0x00. On Haar: a reading starts only on a trigger (Control bit 0); there is no free-running cycle. Control bit 1 selects the SHT31 and bit 2 the LPS35HW; ready (Status bit 0) clears while the chips are read and returns with the reading counter incremented. A chip fault sets its status bit (bit 1 SHT31, bit 2 LPS35HW, bit 7 summary) and latches the fault byte: SHT31 no acknowledge (kind 1) or its own CRC failing (kind 3); LPS35HW no acknowledge (kind 1) or its ONE_SHOT conversion not completing within 100 ms (kind 2); boot latches unit kind 6 (reset), or kind 3 if Page 0 failed its CRC. The next Control write clears it. The readings-requested word (0x24–0x25) and the sleep bit are accepted without effect. Between readings the ATtiny sleeps in standby and wakes on its I²C address.
 
 ```
 Block 1 (0x28–0x2F)   SHT31 — temperature + humidity
