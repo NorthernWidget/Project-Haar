@@ -53,7 +53,7 @@
 #define REG_COUNTER  0x22
 #define REG_REQUEST  0x24  //Readings requested, uint16 LE, writable; Haar has no chip power to hold, so it only accepts the write
 #define REG_CONFIG   0x26  //No bits defined for Haar
-#define REG_FAULT    0x27
+#define REG_REPORT   0x27
 #define BIT_READY    0x01
 #define BIT_PANFAULT 0x80
 #define BIT_TRIGGER  0x01
@@ -64,8 +64,8 @@
 #define FAULT_SHT31_CHECKSUM  0x03  //chip 0, kind 3: the SHT31's own CRC failed
 #define FAULT_LPS35HW_NOACK   0x21  //chip 1, kind 1
 #define FAULT_LPS35HW_TIMEOUT 0x22  //chip 1, kind 2: ONE_SHOT never cleared
-#define FAULT_UNIT_RESET      0xE6  //unit (7), kind 6: reset since the controller last wrote Control
-#define FAULT_UNIT_PAGE0      0xE3  //unit (7), kind 3: Page 0 CRC did not match (unprovisioned or corrupt)
+#define NOTICE_UNIT_RESET      0xE6  //unit (7), kind 6: reset since the controller last wrote Control (a notice: no status bit)
+#define NOTICE_UNIT_PAGE0      0xE3  //unit (7), kind 3: Page 0 CRC did not match (unprovisioned or corrupt)
 #define WRITE 0x00
 
 unsigned long ReadTimeout = 100; //Wait at most 100ms for new read
@@ -99,7 +99,7 @@ void setup() {
 	if(Reg[REG_I2C_ADDR] != 0xFF) ADR = Reg[REG_I2C_ADDR]; //Provisioned address; 0xFF = use default
 	Reg[REG_STATUS] = 0; //Not ready: no reading yet
 	Reg[REG_CTRL] = CHIP_SHT31 | CHIP_LPS35HW; //Power-up: every chip selected
-	Reg[REG_FAULT] = page0Valid ? FAULT_UNIT_RESET : FAULT_UNIT_PAGE0; //Latched until the controller writes Control
+	Reg[REG_REPORT] = page0Valid ? NOTICE_UNIT_RESET : NOTICE_UNIT_PAGE0; //Latched until the controller writes Control
 	Wire.begin(ADR);  //Begin slave I2C
 
 	Wire.onAddrReceive(addressEvent); // register event
@@ -138,10 +138,10 @@ void loop() {
 		//Reading complete: load status and fault, bump the counter, set ready.
 		//Atomic so a controller's page read never straddles the update.
 		uint8_t status = BIT_READY;
-		if(doSHT && shtNoAck) { status |= CHIP_SHT31; Reg[REG_FAULT] = FAULT_SHT31_NOACK; }
-		else if(doSHT && shtCrcFail) { status |= CHIP_SHT31; Reg[REG_FAULT] = FAULT_SHT31_CHECKSUM; }
-		if(doLPS && lpsNoAck) { status |= CHIP_LPS35HW; Reg[REG_FAULT] = FAULT_LPS35HW_NOACK; }
-		else if(doLPS && !presDone) { status |= CHIP_LPS35HW; Reg[REG_FAULT] = FAULT_LPS35HW_TIMEOUT; }
+		if(doSHT && shtNoAck) { status |= CHIP_SHT31; Reg[REG_REPORT] = FAULT_SHT31_NOACK; }
+		else if(doSHT && shtCrcFail) { status |= CHIP_SHT31; Reg[REG_REPORT] = FAULT_SHT31_CHECKSUM; }
+		if(doLPS && lpsNoAck) { status |= CHIP_LPS35HW; Reg[REG_REPORT] = FAULT_LPS35HW_NOACK; }
+		else if(doLPS && !presDone) { status |= CHIP_LPS35HW; Reg[REG_REPORT] = FAULT_LPS35HW_TIMEOUT; }
 		if(status & 0x7E) status |= BIT_PANFAULT;
 		uint16_t count = Reg[REG_COUNTER] | (Reg[REG_COUNTER + 1] << 8);
 		count++;
@@ -505,7 +505,7 @@ void receiveEvent(int DataLen)
 	    //Check for validity of write??
 	    if(!isWritable(Pos)) return; //Read-only register: ignore the write
 	    Reg[Pos] = Val; //Set register value
-	    if(Pos == REG_CTRL) Reg[REG_FAULT] = 0; //A control write acknowledges the latched fault
+	    if(Pos == REG_CTRL) Reg[REG_REPORT] = 0; //A control write acknowledges the report
 	    if(Pos == REG_I2C_ADDR) EEPROM.update(PAGE0_BASE + REG_I2C_ADDR, Val); //Persist I2C address (compare-before-write); takes effect on next boot
 	}
 
