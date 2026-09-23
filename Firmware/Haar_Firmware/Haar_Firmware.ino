@@ -46,6 +46,26 @@
 #define PAGE0_BASE   (E2END + 1 - 32)
 #define REG_I2C_ADDR 0x1F
 #define ADR_DEFAULT  0x48  //Schema 1 'H'; used when Page 0 byte 0x1F is 0xFF (was 0x42)
+
+//Page 1 Block 0 (NW-Device-Specification): universal status and control.
+#define REG_STATUS   0x20
+#define REG_CTRL     0x21
+#define REG_COUNTER  0x22
+#define REG_REQUEST  0x24  //Readings requested, uint16 LE, writable; Haar has no chip power to hold, so it only accepts the write
+#define REG_CONFIG   0x26  //No bits defined for Haar
+#define REG_FAULT    0x27
+#define BIT_READY    0x01
+#define BIT_PANFAULT 0x80
+#define BIT_TRIGGER  0x01
+#define CHIP_SHT31   0x02  //Control chip-select bit and status fault bit: chip 0
+#define CHIP_LPS35HW 0x04  //chip 1
+#define BIT_SLEEP    0x80
+#define FAULT_SHT31_NOACK     0x01  //chip 0, kind 1
+#define FAULT_SHT31_CHECKSUM  0x03  //chip 0, kind 3: the SHT31's own CRC failed
+#define FAULT_LPS35HW_NOACK   0x21  //chip 1, kind 1
+#define FAULT_LPS35HW_TIMEOUT 0x22  //chip 1, kind 2: ONE_SHOT never cleared
+#define FAULT_UNIT_RESET      0xE6  //unit (7), kind 6: reset since the controller last wrote Control
+#define FAULT_UNIT_PAGE0      0xE3  //unit (7), kind 3: Page 0 CRC did not match (unprovisioned or corrupt)
 #define WRITE 0x00
 
 unsigned long ReadTimeout = 100; //Wait at most 100ms for new read
@@ -294,6 +314,13 @@ void loadPage0() {
 	Reg[0x1E] = crc8smbus(Reg, 0x1E);
 }
 
+//Registers a controller may write. Everything else is read-only and writes
+//to it are ignored (NW-Device-Specification, Page 1 rules).
+bool isWritable(uint8_t pos) {
+	return pos == REG_CTRL || pos == REG_CONFIG || pos == REG_I2C_ADDR
+	    || pos == REG_REQUEST || pos == REG_REQUEST + 1;
+}
+
 bool BitRead(uint8_t Val, uint8_t Pos) //Read the bit value at the specified position
 {
 	return (Val >> Pos) & 0x01;
@@ -430,14 +457,12 @@ boolean addressEvent(uint16_t address, uint8_t count)
 
 void requestEvent()
 {
-	//Allow for repeated start condition
-	if(RepeatedStart) {
-		for(int i = 0; i < 2; i++) {
-			Wire.write(Reg[RegID + i]);
-		}
-	}
-	else {
-		Wire.write(Reg[RegID]);
+	//Serve up to one full page from the requested register with auto-increment.
+	//WireS clocks out only as many bytes as the controller asks for; the rest
+	//of the buffer is discarded at the stop condition. Reads past the end of
+	//the array wrap, so a controller never receives bytes from outside it.
+	for(uint8_t i = 0; i < 32; i++) {
+		Wire.write(Reg[(RegID + i) % sizeof(Reg)]);
 	}
 }
 
@@ -450,7 +475,10 @@ void receiveEvent(int DataLen)
 	    uint8_t Pos = Wire.read();
 	    uint8_t Val = Wire.read();
 	    //Check for validity of write??
+	    if(!isWritable(Pos)) return; //Read-only register: ignore the write
 	    Reg[Pos] = Val; //Set register value
+	    if(Pos == REG_CTRL) Reg[REG_FAULT] = 0; //A control write acknowledges the latched fault
+	    if(Pos == REG_I2C_ADDR) EEPROM.update(PAGE0_BASE + REG_I2C_ADDR, Val); //Persist I2C address (compare-before-write); takes effect on next boot
 	}
 
 	if(DataLen == 1){
